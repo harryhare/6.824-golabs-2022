@@ -22,8 +22,31 @@ type ExampleReply struct {
 	Y int
 }
 
-// Add your RPC definitions here.
+const (
+	TypeGet = iota
+	TypeFinish
+	TypeError
+)
 
+const (
+	TypeMap = iota
+	TypeReduce
+	TypeQuit
+)
+
+type TaskRequest struct {
+	Type   int // TypeTask,TypeFinish,TypeError
+	SelfId int
+	TaskId string // only valid when Type==TypeFinish
+}
+
+type TaskResponse struct {
+	Type   int    //map,reduce,quit
+	TaskId string // 每个task 可以被多次分配, task id 唯一
+	Files  []string
+}
+
+// Add your RPC definitions here.
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

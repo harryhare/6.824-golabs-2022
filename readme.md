@@ -6,7 +6,7 @@ git://g.csail.mit.edu/6.824-golabs-2022 6.824
 
 course home page:
 
-https://pdos.csail.mit.edu/6.824/labs
+https://pdos.csail.mit.edu/6.824/
 
 ##
 
