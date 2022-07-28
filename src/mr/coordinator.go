@@ -26,15 +26,15 @@ const (
 type MapTask struct {
 	Id     string
 	File   []string
-	Worker int //which worker is on this task
+	Worker string //which worker is on this task
 	Status int
 	start  time.Time
 }
 
 type ReduceTask struct {
 	Id     string
-	WorkId int // 1-Nreduce
-	Worker int // which worker is on this task
+	WorkId int    // 1-Nreduce
+	Worker string // which worker is on this task
 	Status int
 	start  time.Time
 }
@@ -55,7 +55,7 @@ type Coordinator struct {
 	ReduceDone chan int
 }
 
-func (c *Coordinator) HandleGet(args *TaskRequest, reply *TaskResponse) {
+func (c *Coordinator) handleGet(args *TaskRequest, reply *TaskResponse) {
 
 	task := <-c.TaskTodo
 	if task == nil {
@@ -81,6 +81,7 @@ func (c *Coordinator) HandleGet(args *TaskRequest, reply *TaskResponse) {
 		c.MapLock.Lock()
 		c.MapTasks[mapTask.Id] = mapTask
 		c.MapLock.Unlock()
+		fmt.Printf("assign task %s to %s\n", mapTask.Id, mapTask.Worker)
 	case ReduceTask:
 		reduceTask := task.(*ReduceTask)
 		reply = &TaskResponse{
@@ -97,19 +98,22 @@ func (c *Coordinator) HandleGet(args *TaskRequest, reply *TaskResponse) {
 		c.ReduceLock.Lock()
 		c.ReduceTasks[reduceTask.Id] = reduceTask
 		c.ReduceLock.Unlock()
+		fmt.Printf("assign task %s to %s\n", reduceTask.Id, reduceTask.Worker)
 
 	default:
 		panic(errors.New("unexpect task type"))
 	}
 }
 
-func (c *Coordinator) CheckTimeout(files []string) {
+func (c *Coordinator) checkTimeout() {
+	fmt.Println("check timeout")
 	now := time.Now()
 	c.MapLock.Lock()
 	for k, v := range c.MapTasks {
 		if now.Sub(v.start) > 60*time.Second {
 			delete(c.MapTasks, k)
 			c.TaskTodo <- v
+			fmt.Printf("task %s timeout\n", v.Id)
 		}
 	}
 	c.MapLock.Unlock()
@@ -119,12 +123,13 @@ func (c *Coordinator) CheckTimeout(files []string) {
 		if now.Sub(v.start) > 60*time.Second {
 			delete(c.ReduceTasks, k)
 			c.TaskTodo <- v
+			fmt.Printf("task %s timeout", v.Id)
 		}
 	}
 	c.ReduceLock.Unlock()
 }
 
-func (c *Coordinator) HandleFinish(args *TaskRequest, reply *TaskResponse) {
+func (c *Coordinator) handleFinish(args *TaskRequest, reply *TaskResponse) {
 	taskId := args.TaskId
 	if strings.HasPrefix(taskId, "map") {
 		c.MapLock.Lock()
@@ -139,9 +144,12 @@ func (c *Coordinator) HandleFinish(args *TaskRequest, reply *TaskResponse) {
 		delete(c.MapTasks, taskId)
 		c.MapTaskFinished = append(c.MapTaskFinished, task)
 
+		fmt.Printf("task %s finished from %s\n", taskId, args.SelfId)
+
 		if len(c.MapTaskFinished) == c.Nmap {
 			close(c.MapDone)
-			go c.ProduceReduceTasks()
+			fmt.Println("map work done!")
+			go c.produceReduceTasks()
 		}
 		return
 	}
@@ -156,15 +164,17 @@ func (c *Coordinator) HandleFinish(args *TaskRequest, reply *TaskResponse) {
 		task.Status = TaskFinished
 		delete(c.ReduceTasks, taskId)
 		c.ReduceTaskFinished = append(c.ReduceTaskFinished, task)
+		fmt.Printf("task %s finished from %s\n", taskId, args.SelfId)
 
 		if len(c.ReduceTaskFinished) == c.NReduce {
 			close(c.ReduceDone)
+			fmt.Println("reduce work done!")
 		}
 		return
 	}
 }
 
-func (c *Coordinator) HandleError(args *TaskRequest, reply *TaskResponse) {
+func (c *Coordinator) handleError(args *TaskRequest, reply *TaskResponse) {
 	taskId := args.TaskId
 	if strings.HasPrefix(taskId, "map") {
 		c.MapLock.Lock()
@@ -198,11 +208,11 @@ func (c *Coordinator) HandleError(args *TaskRequest, reply *TaskResponse) {
 func (c *Coordinator) RequestTask(args *TaskRequest, reply *TaskResponse) error {
 	switch args.Type {
 	case TypeGet:
-		c.HandleGet(args, reply)
+		c.handleGet(args, reply)
 	case TypeFinish:
-		c.HandleFinish(args, reply)
+		c.handleFinish(args, reply)
 	case TypeError:
-		c.HandleError(args, reply)
+		c.handleError(args, reply)
 	}
 	return nil
 }
@@ -228,7 +238,7 @@ func (c *Coordinator) Done() bool {
 	return true
 }
 
-func (c *Coordinator) ProduceMapTasks(files []string) {
+func (c *Coordinator) produceMapTasks(files []string) {
 	for i, file := range files {
 		c.TaskTodo <- &MapTask{
 			Id:     fmt.Sprintf("map_%d", i+1),
@@ -236,8 +246,9 @@ func (c *Coordinator) ProduceMapTasks(files []string) {
 			Status: TaskToDo,
 		}
 	}
+	fmt.Printf("add %d map task to queue\n", len(files))
 }
-func (c *Coordinator) ProduceReduceTasks() {
+func (c *Coordinator) produceReduceTasks() {
 	for i := 0; i < c.NReduce; i++ {
 		c.TaskTodo <- &ReduceTask{
 			Id:     fmt.Sprintf("reduce_%d", i+1),
@@ -245,9 +256,18 @@ func (c *Coordinator) ProduceReduceTasks() {
 			Status: TaskToDo,
 		}
 	}
+
+	fmt.Printf("add %d reduce task to queue\n", c.NReduce)
+}
+func checkTimeout(c *Coordinator) {
+	for range time.Tick(time.Second * 60) {
+		c.checkTimeout()
+	}
 }
 
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	fmt.Printf("files %v\n", files)
+	fmt.Printf("nReduce %d\n", nReduce)
 	c := Coordinator{}
 	c.Nmap = len(files)
 	c.NReduce = nReduce
@@ -260,8 +280,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.ReduceTasks = map[string]*ReduceTask{}
 	c.MapDone = make(chan int, 0)
 	c.ReduceDone = make(chan int, 0)
-	go c.ProduceMapTasks(files)
+	go c.produceMapTasks(files)
 
 	c.server()
+
+	go checkTimeout(&c)
+
 	return &c
 }

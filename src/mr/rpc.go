@@ -36,7 +36,7 @@ const (
 
 type TaskRequest struct {
 	Type   int // TypeTask,TypeFinish,TypeError
-	SelfId int
+	SelfId string
 	TaskId string // only valid when Type==TypeFinish
 }
 
