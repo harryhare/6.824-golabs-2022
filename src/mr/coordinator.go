@@ -56,7 +56,7 @@ type Coordinator struct {
 }
 
 func (c *Coordinator) HandleGet(args *TaskRequest, reply *TaskResponse) {
-	
+
 }
 
 func (c *Coordinator) HandleFinish(args *TaskRequest, reply *TaskResponse) {
