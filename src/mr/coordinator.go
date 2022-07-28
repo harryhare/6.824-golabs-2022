@@ -26,6 +26,7 @@ const (
 type MapTask struct {
 	Id     string
 	File   []string
+	WorkId int    // 1-Nreduce
 	Worker string //which worker is on this task
 	Status int
 	start  time.Time
@@ -71,6 +72,7 @@ func (c *Coordinator) handleGet(args *TaskRequest, reply *TaskResponse) {
 			Type:    TypeMap,
 			TaskId:  mapTask.Id,
 			Files:   mapTask.File,
+			WorkId:  mapTask.WorkId,
 			NMap:    c.Nmap,
 			NReduce: c.NReduce,
 		}
@@ -85,11 +87,11 @@ func (c *Coordinator) handleGet(args *TaskRequest, reply *TaskResponse) {
 	case ReduceTask:
 		reduceTask := task.(*ReduceTask)
 		reply = &TaskResponse{
-			Type:     TypeReduce,
-			TaskId:   reduceTask.Id,
-			ReduceId: reduceTask.WorkId,
-			NMap:     c.Nmap,
-			NReduce:  c.NReduce,
+			Type:    TypeReduce,
+			TaskId:  reduceTask.Id,
+			WorkId:  reduceTask.WorkId,
+			NMap:    c.Nmap,
+			NReduce: c.NReduce,
 		}
 		reduceTask.Status = TaskRuning
 		reduceTask.start = time.Now()
@@ -242,6 +244,7 @@ func (c *Coordinator) produceMapTasks(files []string) {
 	for i, file := range files {
 		c.TaskTodo <- &MapTask{
 			Id:     fmt.Sprintf("map_%d", i+1),
+			WorkId: i + 1,
 			File:   []string{file},
 			Status: TaskToDo,
 		}
