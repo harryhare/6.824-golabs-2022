@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -33,6 +34,13 @@ var SelfId = fmt.Sprintf("worker-%d", rand.Int31()%1000)
 //
 // main/mrworker.go calls this function.
 //
+
+func get_intermediate_filename(mapid int, reduceid int) string {
+	return fmt.Sprintf("mr-%d-%d", mapid, reduceid)
+}
+func get_output_filename(reduceid int) string {
+	return fmt.Sprintf("mr-out-%d", reduceid)
+}
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
@@ -40,6 +48,8 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+
+	var err error
 	for true {
 		task := GetTask()
 		if task == nil {
@@ -53,20 +63,23 @@ func Worker(mapf func(string, string) []KeyValue,
 		if task.Type == TypeMap {
 			reduce := task.NReduce
 			files := []*os.File{}
-			var err error
+			encs := []*json.Encoder{}
 			for i := 0; i < reduce; i++ {
-				filename := fmt.Sprintf("mr-%d-%d", task.WorkId, i)
+				filename := get_intermediate_filename(task.WorkId, i)
 				f, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0666)
 				if err != nil {
-					fmt.Errorf("open file %s error, %s", filename, err)
-					break
+					fmt.Errorf("open file %s error, %s\n", filename, err)
+					ErrorTask(task)
+					panic(err)
 				}
 				files = append(files, f)
+				encs = append(encs, json.NewEncoder(f))
 			}
-			if err != nil {
-				ErrorTask(task)
-				continue
-			}
+			defer func() {
+				for _, f := range files {
+					f.Close()
+				}
+			}()
 			for _, filename := range task.Files {
 				file, err := os.Open(filename)
 				if err != nil {
@@ -78,29 +91,54 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 				file.Close()
 				kva := mapf(filename, string(content))
-				// todo write to file
 				for _, kv := range kva {
 					i := ihash(kv.Key) % reduce
-					files[i].Write()
+					err := encs[i].Encode(kv)
+					if err != nil {
+						ErrorTask(task)
+						panic(err)
+					}
 				}
 			}
+			FinishTask(task)
 			continue
 		}
 		if task.Type == TypeReduce {
-			intermediate := []KeyValue{}
-			for _, filename := range task.Files {
-				file, err := os.Open(filename)
+			nmap := task.NMap
+			n := task.WorkId
+			result := map[string][]string{}
+			for i := 0; i < nmap; i++ {
+				filename := get_intermediate_filename(i, n)
+				f, err := os.Open(filename)
 				if err != nil {
-					log.Fatalf("cannot open %v", filename)
+					ErrorTask(task)
+					panic(err)
 				}
-				content, err := ioutil.ReadAll(file)
+				dec := json.NewDecoder(f)
+				kv := &KeyValue{}
+				err = dec.Decode(kv)
 				if err != nil {
-					log.Fatalf("cannot read %v", filename)
+					ErrorTask(task)
+					panic(err)
 				}
-				file.Close()
-				kva := mapf(filename, string(content))
-				intermediate = append(intermediate, kva...)
+				if result[kv.Key] == nil {
+					result[kv.Key] = []string{kv.Value}
+				} else {
+					result[kv.Key] = append(result[kv.Key], kv.Value)
+				}
 			}
+			oname := get_output_filename(task.WorkId)
+			ofile, _ := os.Create(oname)
+			defer ofile.Close()
+			for k, v := range result {
+				output := reducef(k, v)
+				_, err = fmt.Fprintf(ofile, "%v %v\n", k, output)
+				if err != nil {
+					ErrorTask(task)
+					panic(err)
+				}
+			}
+			FinishTask(task)
 			continue
 		}
 	}

@@ -244,7 +244,7 @@ func (c *Coordinator) produceMapTasks(files []string) {
 	for i, file := range files {
 		c.TaskTodo <- &MapTask{
 			Id:     fmt.Sprintf("map_%d", i+1),
-			WorkId: i + 1,
+			WorkId: i,
 			File:   []string{file},
 			Status: TaskToDo,
 		}
@@ -255,7 +255,7 @@ func (c *Coordinator) produceReduceTasks() {
 	for i := 0; i < c.NReduce; i++ {
 		c.TaskTodo <- &ReduceTask{
 			Id:     fmt.Sprintf("reduce_%d", i+1),
-			WorkId: i + 1,
+			WorkId: i,
 			Status: TaskToDo,
 		}
 	}
