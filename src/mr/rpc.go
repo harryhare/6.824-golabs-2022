@@ -41,9 +41,12 @@ type TaskRequest struct {
 }
 
 type TaskResponse struct {
-	Type   int    //map,reduce,quit
-	TaskId string // 每个task 可以被多次分配, task id 唯一
-	Files  []string
+	Type     int    //map,reduce,quit
+	TaskId   string // 每个task 可以被多次分配, task id 唯一
+	NMap     int
+	NReduce  int
+	Files    []string // only map task
+	ReduceId int      // only reduce task
 }
 
 // Add your RPC definitions here.
