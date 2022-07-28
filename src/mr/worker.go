@@ -151,15 +151,16 @@ func ErrorTask(t *TaskResponse) *TaskResponse {
 		SelfId: SelfId,
 		TaskId: t.TaskId,
 	}
-	reply := &TaskResponse{}
-	ok := call("Coordinator.RequestTask", &args, &reply)
+	reply := TaskResponse{}
+	fmt.Printf("error task %v\n", args)
+	ok := call("Coordinator.RequestTask", args, &reply)
 	if ok {
 		fmt.Printf("reply %v\n", reply)
 	} else {
 		fmt.Printf("call failed!\n")
 		return nil
 	}
-	return reply
+	return &reply
 }
 
 func FinishTask(t *TaskResponse) *TaskResponse {
@@ -169,7 +170,8 @@ func FinishTask(t *TaskResponse) *TaskResponse {
 		TaskId: t.TaskId,
 	}
 	reply := &TaskResponse{}
-	ok := call("Coordinator.RequestTask", &args, &reply)
+	fmt.Printf("finish task %v\n", args)
+	ok := call("Coordinator.RequestTask", args, reply)
 	if ok {
 		fmt.Printf("reply %v\n", reply)
 	} else {
@@ -185,15 +187,16 @@ func GetTask() *TaskResponse {
 		SelfId: SelfId,
 		TaskId: "null",
 	}
-	reply := &TaskResponse{}
-	ok := call("Coordinator.RequestTask", &args, &reply)
+	reply := TaskResponse{}
+	fmt.Printf("get task %v\n", args)
+	ok := call("Coordinator.RequestTask", args, &reply)
 	if ok {
 		fmt.Printf("reply %v\n", reply)
 	} else {
 		fmt.Printf("call failed!\n")
 		return nil
 	}
-	return reply
+	return &reply
 }
 
 //

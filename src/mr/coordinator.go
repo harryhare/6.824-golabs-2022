@@ -66,9 +66,9 @@ func (c *Coordinator) handleGet(args *TaskRequest, reply *TaskResponse) {
 		return
 	}
 	switch task.(type) {
-	case MapTask:
+	case *MapTask:
 		mapTask := task.(*MapTask)
-		reply = &TaskResponse{
+		*reply = TaskResponse{
 			Type:    TypeMap,
 			TaskId:  mapTask.Id,
 			Files:   mapTask.File,
@@ -84,9 +84,9 @@ func (c *Coordinator) handleGet(args *TaskRequest, reply *TaskResponse) {
 		c.MapTasks[mapTask.Id] = mapTask
 		c.MapLock.Unlock()
 		fmt.Printf("assign task %s to %s\n", mapTask.Id, mapTask.Worker)
-	case ReduceTask:
+	case *ReduceTask:
 		reduceTask := task.(*ReduceTask)
-		reply = &TaskResponse{
+		*reply = TaskResponse{
 			Type:    TypeReduce,
 			TaskId:  reduceTask.Id,
 			WorkId:  reduceTask.WorkId,
