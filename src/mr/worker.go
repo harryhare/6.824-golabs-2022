@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"time"
 )
 import "log"
 import "net/rpc"
@@ -44,10 +45,7 @@ func get_output_filename(reduceid int) string {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+	rand.Seed(time.Now().Unix())
 
 	var err error
 	for true {
@@ -115,16 +113,17 @@ func Worker(mapf func(string, string) []KeyValue,
 					panic(err)
 				}
 				dec := json.NewDecoder(f)
-				kv := &KeyValue{}
-				err = dec.Decode(kv)
-				if err != nil {
-					ErrorTask(task)
-					panic(err)
-				}
-				if result[kv.Key] == nil {
-					result[kv.Key] = []string{kv.Value}
-				} else {
-					result[kv.Key] = append(result[kv.Key], kv.Value)
+				for {
+					kv := &KeyValue{}
+					err = dec.Decode(kv)
+					if err != nil {
+						break
+					}
+					if result[kv.Key] == nil {
+						result[kv.Key] = []string{kv.Value}
+					} else {
+						result[kv.Key] = append(result[kv.Key], kv.Value)
+					}
 				}
 			}
 			oname := get_output_filename(task.WorkId)

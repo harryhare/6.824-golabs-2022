@@ -95,6 +95,7 @@ else
   echo '---' wc output is not the same as mr-correct-wc.txt
   echo '---' wc test: FAIL
   failed_any=1
+  exit
 fi
 
 # wait for remaining workers and coordinator to exit.
@@ -126,6 +127,7 @@ else
   echo '---' indexer output is not the same as mr-correct-indexer.txt
   echo '---' indexer test: FAIL
   failed_any=1
+  exit
 fi
 
 wait
@@ -314,6 +316,7 @@ else
   echo '---' crash output is not the same as mr-correct-crash.txt
   echo '---' crash test: FAIL
   failed_any=1
+  exit
 fi
 
 #########################################################
