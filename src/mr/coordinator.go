@@ -22,6 +22,10 @@ const (
 	PhaseMap = iota
 	PhaseReduce
 )
+const (
+	timeout  = 5 * time.Second
+	interval = 5 * time.Second
+)
 
 type MapTask struct {
 	Id     string
@@ -112,8 +116,9 @@ func (c *Coordinator) checkTimeout() {
 	now := time.Now()
 	c.MapLock.Lock()
 	for k, v := range c.MapTasks {
-		if now.Sub(v.start) > 60*time.Second {
+		if now.Sub(v.start) > timeout {
 			delete(c.MapTasks, k)
+			v.Status = TaskToDo
 			c.TaskTodo <- v
 			fmt.Printf("task %s timeout\n", v.Id)
 		}
@@ -122,8 +127,9 @@ func (c *Coordinator) checkTimeout() {
 
 	c.ReduceLock.Lock()
 	for k, v := range c.ReduceTasks {
-		if now.Sub(v.start) > 60*time.Second {
+		if now.Sub(v.start) > timeout {
 			delete(c.ReduceTasks, k)
+			v.Status = TaskToDo
 			c.TaskTodo <- v
 			fmt.Printf("task %s timeout", v.Id)
 		}
@@ -263,7 +269,7 @@ func (c *Coordinator) produceReduceTasks() {
 	fmt.Printf("add %d reduce task to queue\n", c.NReduce)
 }
 func checkTimeout(c *Coordinator) {
-	for range time.Tick(time.Second * 60) {
+	for range time.Tick(interval) {
 		c.checkTimeout()
 	}
 }
