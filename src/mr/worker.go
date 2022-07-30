@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"math/rand"
 	"os"
-	"time"
 )
 import "log"
 import "net/rpc"
@@ -30,7 +28,7 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-var SelfId = fmt.Sprintf("worker-%d", rand.Int31()%1000)
+var SelfId = fmt.Sprintf("worker-%d", os.Getpid())
 
 //
 // main/mrworker.go calls this function.
@@ -45,7 +43,7 @@ func get_output_filename(reduceid int) string {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	rand.Seed(time.Now().Unix())
+	//rand.Seed(time.Now().Unix())
 
 	var err error
 	for true {
