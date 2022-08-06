@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"testing"
+	"time"
 )
 
 type Args struct {
@@ -34,15 +35,20 @@ func RPCClient() {
 	//	A: 1234,
 	//}
 	var b int
+	before := time.Now()
 	err = c.Call("SimpleRPC.Echo", a, &b)
 	if err != nil {
 		panic(err)
 	}
 
+	fmt.Printf("rpc cost %v", time.Now().Sub(before))
 	fmt.Println(b)
 }
 
 func TestRPC(t *testing.T) {
+	fmt.Printf("%v\n", time.Millisecond)
+	fmt.Printf("%v\n", time.Microsecond)
+	fmt.Printf("%v\n", time.Nanosecond)
 	s := &SimpleRPC{}
 	rpc.Register(s)
 	rpc.HandleHTTP()
