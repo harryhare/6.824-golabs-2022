@@ -300,7 +300,7 @@ func (rf *Raft) leader_ticker() {
 	suc_ch := make(chan int, len(rf.peers))
 	err_ch := make(chan int, len(rf.peers))
 
-	DPrintf("%d, %d send heartbeat", rf.term, rf.me)
+	DPrintf("%d, %d send heartbeat", term, rf.me)
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			continue
@@ -310,16 +310,16 @@ func (rf *Raft) leader_ticker() {
 			suc := rf.sendAppendEntries(i, &arg1, &reply)
 			if suc && reply.Ok {
 				suc_ch <- 1
-				DPrintf("%d, %d send heartbeat, %d accept", rf.term, rf.me, i)
+				DPrintf("%d, %d send heartbeat, %d accept", term, rf.me, i)
 				return
 			}
 			if suc && !reply.Ok {
 				err_ch <- 1
-				DPrintf("%d, %d send heartbeat, %d reject", rf.term, rf.me, i)
+				DPrintf("%d, %d send heartbeat, %d reject", term, rf.me, i)
 			}
 			if !suc {
 				suc_ch <- 0 //network err
-				DPrintf("%d, %d send heartbeat, %d network error", rf.term, rf.me, i)
+				DPrintf("%d, %d send heartbeat, %d network error", term, rf.me, i)
 			}
 		}(i)
 	}
@@ -343,7 +343,7 @@ func (rf *Raft) leader_ticker() {
 		}
 	}
 
-	DPrintf("%d, %d send heartbeat, %d reply total", rf.term, rf.me, counter)
+	DPrintf("%d, %d send heartbeat, %d reply total", term, rf.me, counter)
 	if counter < quota || is_leader == false {
 		rf.mu.Lock()
 		rf.leader = -1
