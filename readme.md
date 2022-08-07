@@ -13,8 +13,8 @@ https://pdos.csail.mit.edu/6.824/
 | lab   | status |
 |-------|--------|
 | lab1  | done   |
-| lab2a | WIP    |
-| lab2b |        |
+| lab2a | done   |
+| lab2b | WIP    |
 | lab2c |        |
 | lab2d |        |
 | lab3  |        |
