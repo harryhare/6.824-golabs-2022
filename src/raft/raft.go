@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -64,10 +65,10 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	term     int64
-	leader   int
-	vote_for int
-	timeout  time.Time
+	term         int64
+	leader       int
+	vote_for     int
+	vote_timeout time.Time
 }
 
 // return currentTerm and whether this server
@@ -153,10 +154,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.term < args.Term || (rf.term == args.Term && rf.leader == -1 || (rf.term == args.Term && rf.leader == args.Sender)) {
 		rf.leader = args.Sender
 		rf.term = args.Term
-		rf.timeout = time.Now().Add(get_time_out())
+		d := get_time_out()
+		rf.vote_timeout = time.Now().Add(d)
+		//rf.vote_timeout.Format("")
+		DPrintf("%d, %d recv heartbeat from %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
 		reply.Ok = true
 	}
-	//DPrintf("%d, %d recv heartbeat from %d", rf.term, rf.me, args.Sender)
+	DPrintf("%d, %d reject heartbeat from %d, leader %d", rf.term, rf.me, args.Sender, rf.leader)
 	rf.mu.Unlock()
 }
 
@@ -179,13 +183,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if (rf.term) < args.Term {
 		rf.term = args.Term
 		rf.vote_for = args.Sender
-		//rf.timeout = time.Now().Add(get_time_out())
+		rf.leader = -1
+		d := get_time_out()
+		rf.vote_timeout = time.Now().Add(d)
 		reply.Ok = true
-		DPrintf("%d, %d vote to %d", args.Term, rf.me, args.Sender)
+		DPrintf("%d, %d vote to %d, vote_timeout+%v", args.Term, rf.me, args.Sender, d)
 		return
 	}
 	if rf.term == args.Term && (rf.vote_for == args.Sender || rf.vote_for == -1) {
 		reply.Ok = true
+		rf.vote_timeout = time.Now().Add(get_time_out())
 		DPrintf("%d, %d vote to %d", args.Term, rf.me, args.Sender)
 		return
 	}
@@ -206,7 +213,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // The labrpc package simulates a lossy network, in which servers
 // may be unreachable, and in which requests and replies may be lost.
 // Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
+// within a vote_timeout interval, Call() returns true; otherwise
 // Call() returns false. Thus Call() may not return for a while.
 // A false return can be caused by a dead server, a live server that
 // can't be reached, a lost request, or a lost reply.
@@ -278,92 +285,157 @@ func (rf *Raft) killed() bool {
 
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-		rf.mu.Lock()
-		arg1 := AppendEntriesArgs{
-			Sender: rf.me,
-			Term:   rf.term,
-		}
-		reply1 := AppendEntriesReply{}
-		isleader := rf.leader == rf.me
-		rf.mu.Unlock()
 
-		// send appendEntry
-		if isleader {
-			counter := 0
-			quota := len(rf.peers) / 2
-			DPrintf("%d, %d send heartbeat", rf.term, rf.me)
-			for i, _ := range rf.peers {
-				if i == rf.me {
-					continue
-				}
-				suc := rf.sendAppendEntries(i, &arg1, &reply1)
-				if suc && !reply1.Ok {
-					isleader = false
-					DPrintf("%d, %d send heartbeat, %d reject", rf.term, rf.me, i)
-					break
-				}
-				if suc && reply1.Ok {
-					DPrintf("%d, %d send heartbeat, %d accept", rf.term, rf.me, i)
-					counter++
-				}
-			}
-			DPrintf("%d, %d send heartbeat, %d reply", rf.term, rf.me, counter)
-			if counter < quota {
-				rf.mu.Lock()
-				rf.leader = -1
-				rf.mu.Unlock()
-			}
-			time.Sleep(heartbeat)
+func (rf *Raft) leader_ticker() {
+	rf.mu.Lock()
+	term := rf.term
+	rf.mu.Unlock()
+
+	arg1 := AppendEntriesArgs{
+		Term:   term,
+		Sender: rf.me,
+	}
+	is_leader := true
+	quota := (len(rf.peers) / 2)
+	suc_ch := make(chan int, len(rf.peers))
+	err_ch := make(chan int, len(rf.peers))
+
+	DPrintf("%d, %d send heartbeat", rf.term, rf.me)
+	for i, _ := range rf.peers {
+		if i == rf.me {
 			continue
 		}
-
-		rf.mu.Lock()
-		timeout := rf.timeout
-		rf.mu.Unlock()
-		now := time.Now()
-		if now.Before(timeout) {
-			time.Sleep(timeout.Sub(now))
-			continue
+		go func(i int) {
+			reply := AppendEntriesReply{}
+			suc := rf.sendAppendEntries(i, &arg1, &reply)
+			if suc && reply.Ok {
+				suc_ch <- 1
+				DPrintf("%d, %d send heartbeat, %d accept", rf.term, rf.me, i)
+				return
+			}
+			if suc && !reply.Ok {
+				err_ch <- 1
+				DPrintf("%d, %d send heartbeat, %d reject", rf.term, rf.me, i)
+			}
+			if !suc {
+				suc_ch <- 0 //network err
+				DPrintf("%d, %d send heartbeat, %d network error", rf.term, rf.me, i)
+			}
+		}(i)
+	}
+	counter := 0
+	loop := true
+	for loop {
+		select {
+		case ok := <-suc_ch:
+			counter += ok
+			if counter >= quota {
+				loop = false
+				break
+			}
+		case <-err_ch:
+			is_leader = false
+			loop = false
+			break
+		case <-time.After(heartbeat_timeout):
+			loop = false
+			break
 		}
-		// vote a leader
+	}
+
+	DPrintf("%d, %d send heartbeat, %d reply total", rf.term, rf.me, counter)
+	if counter < quota || is_leader == false {
 		rf.mu.Lock()
-		rf.term += 1
-		term := rf.term
 		rf.leader = -1
-		rf.vote_for = rf.me
 		rf.mu.Unlock()
+	}
+}
 
-		DPrintf("%d, %d request vote", term, rf.me)
-		arg := RequestVoteArgs{
-			Sender: rf.me,
-			Term:   term,
+func (rf *Raft) vote_ticker() {
+	rf.mu.Lock()
+	rf.term += 1
+	term := rf.term
+	rf.leader = -1
+	rf.vote_for = rf.me
+	rf.mu.Unlock()
+
+	arg := RequestVoteArgs{
+		Sender: rf.me,
+		Term:   term,
+	}
+	quota := (len(rf.peers) / 2)
+	suc_ch := make(chan int, len(rf.peers))
+	//err_ch := make(chan int, len(rf.peers))
+	DPrintf("%d, %d request vote", term, rf.me)
+	for i, _ := range rf.peers {
+		if i == rf.me {
+			continue
 		}
-		reply := RequestVoteReply{}
-		counter := 0
-		for i, _ := range rf.peers {
-			if i == rf.me {
-				continue
-			}
+		go func(i int) {
+			reply := RequestVoteReply{}
 			suc := rf.sendRequestVote(i, &arg, &reply)
 			if suc && reply.Ok {
 				DPrintf("%d, %d recv vote from %d %v", term, rf.me, i, true)
-				counter++
+				suc_ch <- 1
+				return
 			}
+			suc_ch <- 0
+		}(i)
+	}
+
+	counter := 0
+	loop := true
+	for loop {
+		select {
+		case ok := <-suc_ch:
+			counter += ok
+			if counter >= quota {
+				loop = false
+				break
+			}
+		case <-time.After(request_vote_timeout):
+			loop = false
+			break
 		}
-		quota := len(rf.peers) / 2
-		DPrintf("%d, %d get vote %d", term, rf.me, counter)
+
+	}
+	DPrintf("%d, %d get vote %d", term, rf.me, counter)
+	rf.mu.Lock()
+	if counter < quota || term != rf.term {
+		rf.mu.Unlock()
+		time.Sleep(reelect_time * time.Millisecond)
+		return
+	}
+	rf.leader = rf.me
+	rf.mu.Unlock()
+	DPrintf("%d, %d is leader", term, rf.me)
+}
+
+func (rf *Raft) ticker() {
+	for rf.killed() == false {
 		rf.mu.Lock()
-		if counter < quota || term != rf.term {
-			rf.mu.Unlock()
-			time.Sleep(reelect_time * time.Millisecond)
+		leader := rf.leader
+		vote_timeout := rf.vote_timeout
+		rf.mu.Unlock()
+
+		isleader := leader == rf.me
+		start := time.Now()
+		if isleader {
+			rf.leader_ticker()
+			d := heartbeat_timeout - time.Now().Sub(start)
+			if d > 0 {
+				time.Sleep(d)
+			}
 			continue
 		}
-		rf.leader = rf.me
-		rf.mu.Unlock()
-		DPrintf("%d, %d is leader", term, rf.me)
 
+		d := vote_timeout.Sub(start)
+		if d > 0 {
+			time.Sleep(d)
+			continue
+		}
+
+		rf.vote_ticker()
 	}
 }
 
@@ -379,10 +451,11 @@ func (rf *Raft) ticker() {
 // for any long-running work.
 //
 
-const heartbeat = 100 * time.Millisecond
+const heartbeat_timeout = 100 * time.Millisecond
+const request_vote_timeout = 100 * time.Millisecond
 const min_timeout = 250 // 3* heart beat
 const max_timeout = 500 // max-min > RTT
-const reelect_time = 200
+const reelect_time = 300
 
 func get_time_out() time.Duration {
 	return time.Duration(rand.Intn(max_timeout-min_timeout)+min_timeout) * time.Millisecond
@@ -390,6 +463,7 @@ func get_time_out() time.Duration {
 
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -399,9 +473,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.leader = -1
 	rf.vote_for = -1
 
+	rand.Seed(int64(me))
 	// Your initialization code here (2A, 2B, 2C).
 
-	rf.timeout = time.Now().Add(get_time_out())
+	rf.vote_timeout = time.Now().Add(get_time_out())
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
