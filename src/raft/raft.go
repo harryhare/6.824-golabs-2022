@@ -141,8 +141,11 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 type AppendEntriesArgs struct {
-	Term   int64
-	Sender int
+	Term        int64
+	Sender      int
+	Command     []interface{}
+	Index       int
+	CommitIndex int
 }
 type AppendEntriesReply struct {
 	Ok bool
@@ -172,7 +175,8 @@ type RequestVoteArgs struct {
 
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Ok bool
+	Ok   bool
+	Term int64
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -196,6 +200,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		DPrintf("%d, %d vote to %d", args.Term, rf.me, args.Sender)
 		return
 	}
+	reply.Term = rf.term
 	DPrintf("%d, %d reject vote to %d", args.Term, rf.me, args.Sender)
 
 }
@@ -365,7 +370,7 @@ func (rf *Raft) vote_ticker() {
 	}
 	quota := (len(rf.peers) / 2)
 	suc_ch := make(chan int, len(rf.peers))
-	//err_ch := make(chan int, len(rf.peers))
+	err_ch := make(chan int, len(rf.peers))
 	DPrintf("%d, %d request vote", term, rf.me)
 	for i, _ := range rf.peers {
 		if i == rf.me {
@@ -377,6 +382,14 @@ func (rf *Raft) vote_ticker() {
 			if suc && reply.Ok {
 				DPrintf("%d, %d recv vote from %d %v", term, rf.me, i, true)
 				suc_ch <- 1
+				return
+			}
+			if suc && reply.Term > term {
+				err_ch <- 1
+				rf.mu.Lock()
+				rf.term = reply.Term
+				rf.vote_for = -1
+				rf.mu.Unlock()
 				return
 			}
 			suc_ch <- 0
@@ -393,6 +406,9 @@ func (rf *Raft) vote_ticker() {
 				loop = false
 				break
 			}
+		case <-err_ch:
+			loop = false
+			break
 		case <-time.After(request_vote_timeout):
 			loop = false
 			break
