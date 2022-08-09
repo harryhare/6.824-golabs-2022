@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -252,8 +253,8 @@ type RequestVoteArgs struct {
 	Sender int
 	Term   int64
 
+	LastlogTerm   int64
 	LastLogIndex  int
-	LastlogTerm   int
 	LastlogLength int
 }
 
@@ -263,29 +264,48 @@ type RequestVoteReply struct {
 	Term int64
 }
 
+func get_command_length(command interface{}) int {
+	str := fmt.Sprintf("%+v", command)
+	return len(str)
+}
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	reply.Ok = false
-	if (rf.term) < args.Term {
-		reply.Ok = true
-		rf.term = args.Term
-		rf.vote_for = args.Sender
-		rf.leader = -1
-		d := get_time_out()
-		rf.vote_timeout = time.Now().Add(d)
-		DPrintf("%d, %d vote to %d, vote_timeout+%v", args.Term, rf.me, args.Sender, d)
+	reply.Ok = true
+	if rf.term > args.Term {
+		reply.Ok = false
+		reply.Term = rf.term
+		DPrintf("%d, %d reject vote to %d, request term too low %d", rf.term, rf.me, args.Sender, args.Term)
 		return
 	}
-	if rf.term == args.Term && (rf.vote_for == args.Sender || rf.vote_for == -1) {
-		reply.Ok = true
-		rf.vote_timeout = time.Now().Add(get_time_out())
-		DPrintf("%d, %d vote to %d", args.Term, rf.me, args.Sender)
+	if rf.term == args.Term && rf.vote_for != args.Sender && rf.vote_for != -1 {
+		reply.Ok = false
+		DPrintf("%d, %d reject vote to %d, already voted for %d", rf.term, rf.me, args.Sender, rf.vote_for)
 		return
 	}
-	reply.Term = rf.term
-	DPrintf("%d, %d reject vote to %d", args.Term, rf.me, args.Sender)
+
+	lastLogIndex := len(rf.logs) - 1
+	lastEntry := rf.logs[lastLogIndex]
+	if lastEntry.Term > args.LastlogTerm {
+		reply.Ok = false
+		DPrintf("%d, %d reject vote to %d, last log term too low %d < %d", rf.term, rf.me, args.Sender, lastEntry.Term, args.LastlogTerm)
+		return
+	}
+	lastLogLength := get_command_length(lastEntry.Command)
+	if lastLogIndex > args.LastlogLength {
+		reply.Ok = false
+		DPrintf("%d, %d reject vote to %d, last log length too low %d < %d", rf.term, rf.me, args.Sender, lastLogLength, args.LastlogLength)
+		return
+	}
+
+	reply.Ok = true
+	rf.term = args.Term
+	rf.vote_for = args.Sender
+	rf.leader = -1
+	d := get_time_out()
+	rf.vote_timeout = time.Now().Add(d)
+	DPrintf("%d, %d vote to %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
 
 }
 
@@ -569,11 +589,18 @@ func (rf *Raft) vote_ticker() {
 	term := rf.term
 	rf.leader = -1
 	rf.vote_for = rf.me
+	lastIndex := len(rf.logs) - 1
+	lastLog := rf.logs[lastIndex]
+	lastTerm := lastLog.Term
+	lastLenght := get_command_length(lastLog.Command)
 	rf.mu.Unlock()
 
 	arg := RequestVoteArgs{
-		Sender: rf.me,
-		Term:   term,
+		Sender:        rf.me,
+		Term:          term,
+		LastLogIndex:  lastIndex,
+		LastlogTerm:   lastTerm,
+		LastlogLength: lastLenght,
 	}
 	quota := (len(rf.peers) / 2)
 	suc_ch := make(chan int, len(rf.peers))
@@ -586,12 +613,11 @@ func (rf *Raft) vote_ticker() {
 		go func(i int) {
 			reply := RequestVoteReply{}
 			suc := rf.sendRequestVote(i, &arg, &reply)
-			if suc && reply.Ok {
-				DPrintf("%d, %d recv vote from %d %v", term, rf.me, i, true)
-				suc_ch <- 1
+			if !suc {
+				suc_ch <- 0
 				return
 			}
-			if suc && reply.Term > term {
+			if reply.Term > term {
 				err_ch <- 1
 				rf.mu.Lock()
 				rf.term = reply.Term
@@ -600,7 +626,12 @@ func (rf *Raft) vote_ticker() {
 				rf.mu.Unlock()
 				return
 			}
-			suc_ch <- 0
+
+			if reply.Ok {
+				DPrintf("%d, %d recv vote from %d %v", term, rf.me, i, true)
+				suc_ch <- 1
+				return
+			}
 		}(i)
 	}
 
