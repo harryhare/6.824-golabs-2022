@@ -181,49 +181,50 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.term = args.Term
 	d := get_time_out()
 	rf.vote_timeout = time.Now().Add(d)
-	//DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
+	DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, req %+v", rf.term, rf.me, args.Sender, d, args)
 
-	if args.Entries != nil && len(args.Entries) > 0 {
-		//if args.PrevIndex == -1 {
-		//	reply.Ok = true
-		//	//over write
-		//	rf.logs = rf.logs[:args.PrevIndex+1]
-		//	rf.logs = append(rf.logs, args.Entries...)
-		//	DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, args.Term)
-		//} else
-		if len(rf.logs)-1 < args.PrevIndex {
+	//if args.PrevIndex == -1 {
+	//	reply.Ok = true
+	//	//over write
+	//	rf.logs = rf.logs[:args.PrevIndex+1]
+	//	rf.logs = append(rf.logs, args.Entries...)
+	//	DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, args.Term)
+	//} else
+	if len(rf.logs)-1 < args.PrevIndex {
+		reply.Ok = false
+		last_entry := rf.logs[len(rf.logs)-1]
+		reply.PrevTerm = last_entry.Term
+		reply.PrevIndex = len(rf.logs) - 1
+		DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex is empty", rf.term, rf.me, args.Sender, d)
+		return
+	} else {
+		prev_entry := rf.logs[args.PrevIndex]
+		if prev_entry.Term != args.PrevTerm {
 			reply.Ok = false
-			last_entry := rf.logs[len(rf.logs)-1]
-			reply.PrevTerm = last_entry.Term
-			reply.PrevIndex = len(rf.logs) - 1
-			DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex is empty", rf.term, rf.me, args.Sender, d)
-		} else {
-			prev_entry := rf.logs[args.PrevIndex]
-			if prev_entry.Term != args.PrevTerm {
-				reply.Ok = false
-				i := args.PrevIndex
-				for ; i >= 0; i-- {
-					if rf.logs[i].Term != prev_entry.Term {
-						break
-					}
+			i := args.PrevIndex
+			for ; i >= 0; i-- {
+				if rf.logs[i].Term != prev_entry.Term {
+					break
 				}
-				reply.PrevTerm = -1
-				reply.PrevIndex = i
-				if i >= 0 {
-					reply.PrevTerm = rf.logs[i].Term
-				}
-				DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex term not match local %d leader %d", rf.term, rf.me, args.Sender, d, prev_entry.Term, args.PrevTerm)
-			} else {
-				reply.Ok = true
-				//over write
-				rf.logs = rf.logs[:args.PrevIndex+1]
-				rf.logs = append(rf.logs, args.Entries...)
-				DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, args.Term)
-
 			}
+			reply.PrevTerm = -1
+			reply.PrevIndex = i
+			if i >= 0 {
+				reply.PrevTerm = rf.logs[i].Term
+			}
+			DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex term not match local %d leader %d", rf.term, rf.me, args.Sender, d, prev_entry.Term, args.PrevTerm)
+			return
+		} else {
+			reply.Ok = true
+			//over write
+			rf.logs = rf.logs[:args.PrevIndex+1]
+			rf.logs = append(rf.logs, args.Entries...)
+			DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, args.Term)
 
 		}
+
 	}
+
 	if rf.commitedIndex < args.CommitIndex {
 		DPrintf("%d, %d recv AppendEntries  from %d, commit index from %d to %d, len(logs) %d", rf.term, rf.me, args.Sender, rf.commitedIndex, args.CommitIndex, len(rf.logs))
 		r := args.CommitIndex
@@ -289,14 +290,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	lastEntry := rf.logs[lastLogIndex]
 	if lastEntry.Term > args.LastlogTerm {
 		reply.Ok = false
-		DPrintf("%d, %d reject vote to %d, last log term too low %d < %d", rf.term, rf.me, args.Sender, lastEntry.Term, args.LastlogTerm)
+		DPrintf("%d, %d reject vote to %d, last log term too low %d > %d", rf.term, rf.me, args.Sender, lastEntry.Term, args.LastlogTerm)
 		return
 	}
-	lastLogLength := get_command_length(lastEntry.Command)
-	if lastLogIndex > args.LastlogLength {
-		reply.Ok = false
-		DPrintf("%d, %d reject vote to %d, last log length too low %d < %d", rf.term, rf.me, args.Sender, lastLogLength, args.LastlogLength)
-		return
+	if lastEntry.Term == args.LastlogTerm {
+		lastLogLength := get_command_length(lastEntry.Command)
+		if lastLogLength > args.LastlogLength {
+			reply.Ok = false
+			DPrintf("%d, %d reject vote to %d, last log length too low %d > %d", rf.term, rf.me, args.Sender, lastLogLength, args.LastlogLength)
+			return
+		}
 	}
 
 	reply.Ok = true
@@ -626,6 +629,15 @@ func (rf *Raft) vote_ticker() {
 				rf.mu.Unlock()
 				return
 			}
+			if !reply.Ok {
+				err_ch <- 1
+				rf.mu.Lock()
+				rf.term = reply.Term
+				rf.vote_for = -1
+				rf.leader = -1
+				rf.mu.Unlock()
+				return
+			}
 
 			if reply.Ok {
 				DPrintf("%d, %d recv vote from %d %v", term, rf.me, i, true)
@@ -676,8 +688,8 @@ func (rf *Raft) ticker() {
 		isleader := leader == rf.me
 		start := time.Now()
 		if isleader {
-			rf.leader_ticker()
-			//rf.leader_send_entries()
+			//rf.leader_ticker()
+			rf.leader_send_entries()
 			d := heartbeat_timeout - time.Now().Sub(start)
 			if d > 0 {
 				time.Sleep(d)
@@ -711,7 +723,7 @@ const heartbeat_timeout = 100 * time.Millisecond
 const request_vote_timeout = 100 * time.Millisecond
 const min_timeout = 250 // 3* heart beat
 const max_timeout = 500 // max-min > RTT
-const reelect_time = 300
+const reelect_time = 200
 
 func get_time_out() time.Duration {
 	return time.Duration(rand.Intn(max_timeout-min_timeout)+min_timeout) * time.Millisecond
