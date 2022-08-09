@@ -52,7 +52,7 @@ type ApplyMsg struct {
 }
 
 type LogEntry struct {
-	Term    int
+	Term    int64
 	Command interface{}
 }
 type Raft struct {
@@ -66,7 +66,8 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	logs []LogEntry
+	logs          []LogEntry
+	commitedIndex int
 
 	term         int64
 	leader       int
@@ -147,13 +148,14 @@ type AppendEntriesArgs struct {
 	Term   int64
 	Sender int
 
-	Command     []interface{}
+	Entries     []LogEntry
 	PrevIndex   int
 	PrevTerm    int64
 	CommitIndex int
 }
 type AppendEntriesReply struct {
-	Ok bool
+	Ok   bool
+	Term int64
 
 	PrevIndex int //
 	PrevTerm  int64
@@ -161,18 +163,75 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	reply.Ok = false
-	if rf.term < args.Term || (rf.term == args.Term && rf.leader == -1 || (rf.term == args.Term && rf.leader == args.Sender)) {
-		rf.leader = args.Sender
-		rf.term = args.Term
-		d := get_time_out()
-		rf.vote_timeout = time.Now().Add(d)
-		DPrintf("%d, %d recv heartbeat from %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
-		reply.Ok = true
-	} else {
-		DPrintf("%d, %d reject heartbeat from %d, leader %d", rf.term, rf.me, args.Sender, rf.leader)
+	defer rf.mu.Unlock()
+	if rf.term > args.Term {
+		reply.Ok = false
+		reply.Term = rf.term
+		DPrintf("%d, %d reject AppendEntries from %d, leader %d", rf.term, rf.me, args.Sender, rf.leader)
+		return
 	}
-	rf.mu.Unlock()
+	if rf.term == args.Term && rf.leader != -1 && rf.leader != args.Sender {
+		DPrintf("%d, %d reject AppendEntries from %d, leader %d", rf.term, rf.me, args.Sender, rf.leader)
+		reply.Ok = false
+		return
+	}
+	reply.Ok = true
+	rf.leader = args.Sender
+	rf.term = args.Term
+	d := get_time_out()
+	rf.vote_timeout = time.Now().Add(d)
+	//DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
+
+	if args.Entries != nil && len(args.Entries) > 0 {
+		if len(rf.logs)-1 < args.PrevIndex {
+			reply.Ok = false
+			last_entry := rf.logs[len(rf.logs)-1]
+			reply.PrevTerm = last_entry.Term
+			reply.PrevIndex = len(rf.logs) - 1
+			DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex is empty", rf.term, rf.me, args.Sender, d)
+		} else {
+			prev_entry := rf.logs[args.PrevIndex]
+			if prev_entry.Term != args.PrevTerm {
+				reply.Ok = false
+				i := args.PrevIndex
+				for ; i >= 0; i-- {
+					if rf.logs[i].Term != prev_entry.Term {
+						break
+					}
+				}
+				reply.PrevTerm = -1
+				reply.PrevIndex = i
+				if i >= 0 {
+					reply.PrevTerm = rf.logs[i].Term
+				}
+				DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex term not match local %d leader %d", rf.term, rf.me, args.Sender, d, prev_entry.Term, args.PrevTerm)
+			} else {
+				reply.Ok = true
+				//over write
+				rf.logs = rf.logs[:args.PrevIndex]
+				rf.logs = append(rf.logs, args.Entries...)
+				DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, prev_entry.Term)
+
+			}
+
+		}
+	}
+
+	if rf.commitedIndex < args.CommitIndex {
+		r := args.CommitIndex
+		if len(rf.logs) < r {
+			r = len(rf.logs)
+		}
+		for i := rf.commitedIndex; i < r; i++ {
+			msg := ApplyMsg{
+				CommandIndex: i,
+				Command:      rf.logs[i].Command,
+				CommandValid: true,
+			}
+			rf.applyCh <- msg
+		}
+		rf.commitedIndex = r
+	}
 }
 
 type RequestVoteArgs struct {
@@ -270,13 +329,20 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	rf.mu.Unlock()
+	index := len(rf.logs)
+	term := rf.term
+	isLeader := (rf.leader == rf.me)
+	if !isLeader {
+		return -1, int(term), false
+	}
+	rf.logs = append(rf.logs, LogEntry{
+		Term:    term,
+		Command: command,
+	})
 
-	// Your code here (2B).
-
-	return index, term, isLeader
+	return index, int(term), true
 }
 
 //
@@ -300,9 +366,6 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// The ticker go routine starts a new election if this peer hasn't received
-// heartsbeats recently.
-
 func (rf *Raft) leader_ticker() {
 	rf.mu.Lock()
 	term := rf.term
@@ -325,19 +388,30 @@ func (rf *Raft) leader_ticker() {
 		go func(i int) {
 			reply := AppendEntriesReply{}
 			suc := rf.sendAppendEntries(i, &arg1, &reply)
-			if suc && reply.Ok {
+			if !suc {
+				suc_ch <- 0 //network err
+				DPrintf("%d, %d send heartbeat, %d network error", term, rf.me, i)
+				return
+			}
+			if reply.Term > term {
+				err_ch <- 1
+				rf.mu.Lock()
+				rf.term = reply.Term
+				rf.vote_for = -1
+				rf.leader = -1
+				rf.mu.Unlock()
+				return
+			}
+			if reply.Ok {
 				suc_ch <- 1
 				DPrintf("%d, %d send heartbeat, %d accept", term, rf.me, i)
 				return
 			}
-			if suc && !reply.Ok {
-				err_ch <- 1
+			// impossible branch
+			if !reply.Ok {
 				DPrintf("%d, %d send heartbeat, %d reject", term, rf.me, i)
 			}
-			if !suc {
-				suc_ch <- 0 //network err
-				DPrintf("%d, %d send heartbeat, %d network error", term, rf.me, i)
-			}
+
 		}(i)
 	}
 	counter := 0
@@ -401,6 +475,7 @@ func (rf *Raft) vote_ticker() {
 				rf.mu.Lock()
 				rf.term = reply.Term
 				rf.vote_for = -1
+				rf.leader = -1
 				rf.mu.Unlock()
 				return
 			}
@@ -500,6 +575,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.dead = 0
 	rf.leader = -1
 	rf.vote_for = -1
+	rf.logs = []LogEntry{}
+	rf.commitedIndex = 0 // exclude
 
 	rand.Seed(int64(me))
 	// Your initialization code here (2A, 2B, 2C).
