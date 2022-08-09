@@ -183,13 +183,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
 
 	if args.Entries != nil && len(args.Entries) > 0 {
-		if args.PrevIndex == -1 {
-			reply.Ok = true
-			//over write
-			rf.logs = rf.logs[:args.PrevIndex+1]
-			rf.logs = append(rf.logs, args.Entries...)
-			DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, args.Term)
-		} else if len(rf.logs)-1 < args.PrevIndex {
+		//if args.PrevIndex == -1 {
+		//	reply.Ok = true
+		//	//over write
+		//	rf.logs = rf.logs[:args.PrevIndex+1]
+		//	rf.logs = append(rf.logs, args.Entries...)
+		//	DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, args.Term)
+		//} else
+		if len(rf.logs)-1 < args.PrevIndex {
 			reply.Ok = false
 			last_entry := rf.logs[len(rf.logs)-1]
 			reply.PrevTerm = last_entry.Term
@@ -225,17 +226,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.commitedIndex < args.CommitIndex {
 		DPrintf("%d, %d recv AppendEntries  from %d, commit index from %d to %d, len(logs) %d", rf.term, rf.me, args.Sender, rf.commitedIndex, args.CommitIndex, len(rf.logs))
 		r := args.CommitIndex
-		if len(rf.logs) < r {
-			r = len(rf.logs)
+		if len(rf.logs)-1 < r {
+			r = len(rf.logs) - 1
 		}
 		rf.apply_entries(r)
 	}
 }
 
 func (rf *Raft) apply_entries(r int) {
-	for i := rf.commitedIndex; i < r; i++ {
+	for i := rf.commitedIndex + 1; i <= r; i++ {
 		msg := ApplyMsg{
-			CommandIndex: i + 1, // index for outside,need + 1
+			CommandIndex: i, // index for outside,need + 1
 			Command:      rf.logs[i].Command,
 			CommandValid: true,
 		}
@@ -354,7 +355,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	})
 	go rf.leader_send_entries()
-	return index + 1, int(term), true // index for outside,need + 1
+	return index, int(term), true
 }
 
 //
@@ -383,16 +384,15 @@ func (rf *Raft) leader_send_entries() {
 	term := rf.term
 
 	last_commit := rf.commitedIndex
-	new_commit_index := len(rf.logs)
-	prevIndex := last_commit - 1
-	prevTerm := int64(-1)
-	if prevIndex >= 0 {
-		prevTerm = rf.logs[prevIndex].Term
-	}
+	new_commit_index := len(rf.logs) - 1
+
+	prevIndex := last_commit
+	prevTerm := rf.logs[prevIndex].Term
+
 	arg1 := AppendEntriesArgs{
 		Term:        term,
 		Sender:      rf.me,
-		Entries:     rf.logs[prevIndex+1 : new_commit_index],
+		Entries:     rf.logs[prevIndex+1 : new_commit_index+1],
 		PrevIndex:   prevIndex,
 		PrevTerm:    prevTerm,
 		CommitIndex: last_commit,
@@ -437,14 +437,12 @@ func (rf *Raft) leader_send_entries() {
 				// if !reply.Ok
 				rf.mu.Lock()
 				prevIndex := reply.PrevIndex
-				prevTerm := int64(-1)
-				if prevIndex >= 0 {
-					prevTerm = rf.logs[prevIndex].Term
-				}
+				prevTerm := rf.logs[prevIndex].Term
+
 				arg = &AppendEntriesArgs{
 					Term:        term,
 					Sender:      rf.me,
-					Entries:     rf.logs[prevIndex+1 : new_commit_index],
+					Entries:     rf.logs[prevIndex+1 : new_commit_index+1],
 					PrevIndex:   prevIndex,
 					PrevTerm:    prevTerm,
 					CommitIndex: rf.commitedIndex,
@@ -462,7 +460,7 @@ func (rf *Raft) leader_send_entries() {
 		case ok := <-suc_ch:
 			counter += ok
 			if counter >= quota {
-				DPrintf("%d, %d leader upte commited index to %d", term, rf.me, new_commit_index)
+				DPrintf("%d, %d leader update commited index to %d", term, rf.me, new_commit_index)
 				rf.mu.Lock()
 				//rf.commitedIndex = new_commit_index
 				rf.apply_entries(new_commit_index)
@@ -699,8 +697,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.dead = 0
 	rf.leader = -1
 	rf.vote_for = -1
-	rf.logs = []LogEntry{}
-	rf.commitedIndex = 0 // exclude
+	rf.logs = []LogEntry{
+		{
+			Term:    -1,
+			Command: "Sentinel",
+		},
+	}
+	rf.commitedIndex = 0 //last commited index
 
 	rand.Seed(int64(me))
 	// Your initialization code here (2A, 2B, 2C).
