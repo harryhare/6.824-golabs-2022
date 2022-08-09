@@ -183,7 +183,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
 
 	if args.Entries != nil && len(args.Entries) > 0 {
-		if len(rf.logs)-1 < args.PrevIndex {
+		if args.PrevIndex == -1 {
+			reply.Ok = true
+			//over write
+			rf.logs = rf.logs[:args.PrevIndex+1]
+			rf.logs = append(rf.logs, args.Entries...)
+			DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, args.Term)
+		} else if len(rf.logs)-1 < args.PrevIndex {
 			reply.Ok = false
 			last_entry := rf.logs[len(rf.logs)-1]
 			reply.PrevTerm = last_entry.Term
@@ -208,30 +214,36 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			} else {
 				reply.Ok = true
 				//over write
-				rf.logs = rf.logs[:args.PrevIndex]
+				rf.logs = rf.logs[:args.PrevIndex+1]
 				rf.logs = append(rf.logs, args.Entries...)
-				DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, prev_entry.Term)
+				DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prev term %d, Entries appended", rf.term, rf.me, args.Sender, d, args.Term)
 
 			}
 
 		}
 	}
-
 	if rf.commitedIndex < args.CommitIndex {
+		DPrintf("%d, %d recv AppendEntries  from %d, commit index from %d to %d, len(logs) %d", rf.term, rf.me, args.Sender, rf.commitedIndex, args.CommitIndex, len(rf.logs))
 		r := args.CommitIndex
 		if len(rf.logs) < r {
 			r = len(rf.logs)
 		}
-		for i := rf.commitedIndex; i < r; i++ {
-			msg := ApplyMsg{
-				CommandIndex: i,
-				Command:      rf.logs[i].Command,
-				CommandValid: true,
-			}
-			rf.applyCh <- msg
-		}
-		rf.commitedIndex = r
+		rf.apply_entries(r)
 	}
+}
+
+func (rf *Raft) apply_entries(r int) {
+	for i := rf.commitedIndex; i < r; i++ {
+		msg := ApplyMsg{
+			CommandIndex: i + 1, // index for outside,need + 1
+			Command:      rf.logs[i].Command,
+			CommandValid: true,
+		}
+
+		DPrintf("%d, %d apply commit index %d,", rf.term, rf.me, i)
+		rf.applyCh <- msg
+	}
+	rf.commitedIndex = r
 }
 
 type RequestVoteArgs struct {
@@ -341,8 +353,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    term,
 		Command: command,
 	})
-
-	return index, int(term), true
+	go rf.leader_send_entries()
+	return index + 1, int(term), true // index for outside,need + 1
 }
 
 //
@@ -366,21 +378,132 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) leader_send_entries() {
+	rf.mu.Lock()
+	term := rf.term
+
+	last_commit := rf.commitedIndex
+	new_commit_index := len(rf.logs)
+	prevIndex := last_commit - 1
+	prevTerm := int64(-1)
+	if prevIndex >= 0 {
+		prevTerm = rf.logs[prevIndex].Term
+	}
+	arg1 := AppendEntriesArgs{
+		Term:        term,
+		Sender:      rf.me,
+		Entries:     rf.logs[prevIndex+1 : new_commit_index],
+		PrevIndex:   prevIndex,
+		PrevTerm:    prevTerm,
+		CommitIndex: last_commit,
+	}
+	rf.mu.Unlock()
+
+	is_leader := true
+	quota := (len(rf.peers) / 2)
+	suc_ch := make(chan int, len(rf.peers))
+	err_ch := make(chan int, len(rf.peers))
+
+	DPrintf("%d, %d send entries", term, rf.me)
+	for i, _ := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go func(i int) {
+			reply := AppendEntriesReply{}
+			reply.Ok = false
+			arg := &arg1
+			for !reply.Ok {
+				suc := rf.sendAppendEntries(i, arg, &reply)
+				if !suc {
+					suc_ch <- 0 //network err
+					DPrintf("%d, %d send entries, %d network error", term, rf.me, i)
+					return
+				}
+				if reply.Term > term {
+					err_ch <- 1
+					rf.mu.Lock()
+					rf.term = reply.Term
+					rf.vote_for = -1
+					rf.leader = -1
+					rf.mu.Unlock()
+					return
+				}
+				if reply.Ok {
+					suc_ch <- 1
+					DPrintf("%d, %d send heartbeat, %d accept", term, rf.me, i)
+					return
+				}
+				// if !reply.Ok
+				rf.mu.Lock()
+				prevIndex := reply.PrevIndex
+				prevTerm := int64(-1)
+				if prevIndex >= 0 {
+					prevTerm = rf.logs[prevIndex].Term
+				}
+				arg = &AppendEntriesArgs{
+					Term:        term,
+					Sender:      rf.me,
+					Entries:     rf.logs[prevIndex+1 : new_commit_index],
+					PrevIndex:   prevIndex,
+					PrevTerm:    prevTerm,
+					CommitIndex: rf.commitedIndex,
+				}
+				rf.mu.Unlock()
+				DPrintf("%d, %d send heartbeat, %d reject", term, rf.me, i)
+			}
+		}(i)
+	}
+
+	counter := 0
+	loop := true
+	for loop {
+		select {
+		case ok := <-suc_ch:
+			counter += ok
+			if counter >= quota {
+				DPrintf("%d, %d leader upte commited index to %d", term, rf.me, new_commit_index)
+				rf.mu.Lock()
+				//rf.commitedIndex = new_commit_index
+				rf.apply_entries(new_commit_index)
+				rf.mu.Unlock()
+				loop = false
+				break
+			}
+		case <-err_ch:
+			is_leader = false
+			loop = false
+			break
+		case <-time.After(heartbeat_timeout):
+			loop = false
+			break
+		}
+	}
+
+	DPrintf("%d, %d send heartbeat, %d reply total", term, rf.me, counter)
+	if counter < quota || is_leader == false {
+		rf.mu.Lock()
+		rf.leader = -1
+		rf.mu.Unlock()
+	}
+}
+
 func (rf *Raft) leader_ticker() {
 	rf.mu.Lock()
 	term := rf.term
 	rf.mu.Unlock()
 
 	arg1 := AppendEntriesArgs{
-		Term:   term,
-		Sender: rf.me,
+		Term:        term,
+		Sender:      rf.me,
+		CommitIndex: rf.commitedIndex,
 	}
 	is_leader := true
 	quota := (len(rf.peers) / 2)
 	suc_ch := make(chan int, len(rf.peers))
 	err_ch := make(chan int, len(rf.peers))
 
-	DPrintf("%d, %d send heartbeat", term, rf.me)
+	DPrintf("%d, %d send heartbeat, commited index %d", term, rf.me, rf.commitedIndex)
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			continue
@@ -525,6 +648,7 @@ func (rf *Raft) ticker() {
 		start := time.Now()
 		if isleader {
 			rf.leader_ticker()
+			//rf.leader_send_entries()
 			d := heartbeat_timeout - time.Now().Sub(start)
 			if d > 0 {
 				time.Sleep(d)

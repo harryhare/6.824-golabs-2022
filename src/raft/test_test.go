@@ -142,6 +142,7 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.begin("Test (2B): basic agreement")
 
 	iters := 3
+	// log index,start from 1
 	for index := 1; index < iters+1; index++ {
 		nd, _ := cfg.nCommitted(index)
 		if nd > 0 {
@@ -195,7 +196,7 @@ func TestRPCBytes2B(t *testing.T) {
 //
 // test just failure of followers.
 //
-func For2023TestFollowerFailure2B(t *testing.T) {
+func TestFollowerFailure2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
