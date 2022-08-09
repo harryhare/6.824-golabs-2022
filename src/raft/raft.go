@@ -366,7 +366,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
-	rf.mu.Unlock()
+	defer rf.mu.Unlock()
 	index := len(rf.logs)
 	term := rf.term
 	isLeader := (rf.leader == rf.me)
