@@ -51,9 +51,10 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-//
-// A Go object implementing a single Raft peer.
-//
+type LogEntry struct {
+	Term    int
+	Command interface{}
+}
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -65,6 +66,8 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	logs []LogEntry
+
 	term         int64
 	leader       int
 	vote_for     int
@@ -141,14 +144,19 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 type AppendEntriesArgs struct {
-	Term        int64
-	Sender      int
+	Term   int64
+	Sender int
+
 	Command     []interface{}
-	Index       int
+	PrevIndex   int
+	PrevTerm    int64
 	CommitIndex int
 }
 type AppendEntriesReply struct {
 	Ok bool
+
+	PrevIndex int //
+	PrevTerm  int64
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -159,11 +167,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.term = args.Term
 		d := get_time_out()
 		rf.vote_timeout = time.Now().Add(d)
-		//rf.vote_timeout.Format("")
 		DPrintf("%d, %d recv heartbeat from %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
 		reply.Ok = true
+	} else {
+		DPrintf("%d, %d reject heartbeat from %d, leader %d", rf.term, rf.me, args.Sender, rf.leader)
 	}
-	DPrintf("%d, %d reject heartbeat from %d, leader %d", rf.term, rf.me, args.Sender, rf.leader)
 	rf.mu.Unlock()
 }
 
@@ -171,6 +179,10 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Sender int
 	Term   int64
+
+	LastLogIndex  int
+	LastlogTerm   int
+	LastlogLength int
 }
 
 type RequestVoteReply struct {
@@ -185,12 +197,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	reply.Ok = false
 	if (rf.term) < args.Term {
+		reply.Ok = true
 		rf.term = args.Term
 		rf.vote_for = args.Sender
 		rf.leader = -1
 		d := get_time_out()
 		rf.vote_timeout = time.Now().Add(d)
-		reply.Ok = true
 		DPrintf("%d, %d vote to %d, vote_timeout+%v", args.Term, rf.me, args.Sender, d)
 		return
 	}
