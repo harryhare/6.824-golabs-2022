@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -265,10 +264,6 @@ type RequestVoteReply struct {
 	Term int64
 }
 
-func get_command_length(command interface{}) int {
-	str := fmt.Sprintf("%+v", command)
-	return len(str)
-}
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
@@ -294,7 +289,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	if lastEntry.Term == args.LastlogTerm {
-		lastLogLength := get_command_length(lastEntry.Command)
+		lastLogLength := len(rf.logs)
 		if lastLogLength > args.LastlogLength {
 			reply.Ok = false
 			DPrintf("%d, %d reject vote to %d, last log length too low %d > %d", rf.term, rf.me, args.Sender, lastLogLength, args.LastlogLength)
@@ -377,7 +372,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    term,
 		Command: command,
 	})
-	go rf.leader_send_entries()
+	//go rf.leader_send_entries() // uncomment to speed up
 	return index, int(term), true
 }
 
@@ -595,7 +590,7 @@ func (rf *Raft) vote_ticker() {
 	lastIndex := len(rf.logs) - 1
 	lastLog := rf.logs[lastIndex]
 	lastTerm := lastLog.Term
-	lastLenght := get_command_length(lastLog.Command)
+	lastLength := len(rf.logs)
 	rf.mu.Unlock()
 
 	arg := RequestVoteArgs{
@@ -603,7 +598,7 @@ func (rf *Raft) vote_ticker() {
 		Term:          term,
 		LastLogIndex:  lastIndex,
 		LastlogTerm:   lastTerm,
-		LastlogLength: lastLenght,
+		LastlogLength: lastLength,
 	}
 	quota := (len(rf.peers) / 2)
 	suc_ch := make(chan int, len(rf.peers))
