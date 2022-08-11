@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"6.824/labgob"
+	"bytes"
 	"log"
 	"math/rand"
 	"sync"
@@ -92,14 +94,13 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.term)
+	e.Encode(rf.vote_for)
+	e.Encode(rf.logs)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -109,19 +110,20 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	err := d.Decode(&rf.term)
+	if err != nil {
+		panic(err)
+	}
+	err = d.Decode(&rf.vote_for)
+	if err != nil {
+		panic(err)
+	}
+	err = d.Decode(&rf.logs)
+	if err != nil {
+		panic(err)
+	}
 }
 
 //
@@ -232,6 +234,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.apply_entries(r)
 	}
+	rf.persist() // entry follower
 }
 
 func (rf *Raft) apply_entries(r int) {
@@ -305,6 +308,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.vote_timeout = time.Now().Add(d)
 	DPrintf("%d, %d vote to %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
 
+	rf.persist() // for vote
 }
 
 //
@@ -502,6 +506,9 @@ func (rf *Raft) leader_send_entries() {
 		rf.leader = -1
 		rf.mu.Unlock()
 	}
+	rf.mu.Lock()
+	rf.persist() // entry leader
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) leader_ticker() {
@@ -669,6 +676,7 @@ func (rf *Raft) vote_ticker() {
 		return
 	}
 	rf.leader = rf.me
+	rf.persist() // vote leader
 	rf.mu.Unlock()
 	DPrintf("%d, %d is leader", term, rf.me)
 }
@@ -727,6 +735,8 @@ func get_time_out() time.Duration {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	rand.Seed(int64(me))
+
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -735,20 +745,22 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.dead = 0
 	rf.leader = -1
 	rf.vote_for = -1
-	rf.logs = []LogEntry{
-		{
-			Term:    -1,
-			Command: "Sentinel",
-		},
-	}
+
 	rf.commitedIndex = 0 //last commited index
 
-	rand.Seed(int64(me))
 	// Your initialization code here (2A, 2B, 2C).
 
 	rf.vote_timeout = time.Now().Add(get_time_out())
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	if rf.logs == nil || len(rf.logs) == 0 {
+		rf.logs = []LogEntry{
+			{
+				Term:    -1,
+				Command: "Sentinel",
+			},
+		}
+	}
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
