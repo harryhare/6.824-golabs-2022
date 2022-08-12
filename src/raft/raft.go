@@ -166,14 +166,15 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	reply.Term = rf.term
 	if rf.term > args.Term {
 		reply.Ok = false
-		reply.Term = rf.term
-		DPrintf("%d, %d reject AppendEntries from %d, leader %d", rf.term, rf.me, args.Sender, rf.leader)
+		//reply.Term = rf.term
+		DPrintf("%d, %d reject AppendEntries from %d, leader %d, term too low %+v", rf.term, rf.me, args.Sender, rf.leader, args)
 		return
 	}
 	if rf.term == args.Term && rf.leader != -1 && rf.leader != args.Sender {
-		DPrintf("%d, %d reject AppendEntries from %d, leader %d", rf.term, rf.me, args.Sender, rf.leader)
+		DPrintf("%d, %d reject AppendEntries from %d, leader %d, sender is not leader %+v", rf.term, rf.me, args.Sender, rf.leader, args)
 		reply.Ok = false
 		return
 	}
@@ -245,7 +246,7 @@ func (rf *Raft) apply_entries(r int) {
 			CommandValid: true,
 		}
 
-		DPrintf("%d, %d apply commit index %d,", rf.term, rf.me, i)
+		DPrintf("%d, %d apply commit index %d:%+v,", rf.term, rf.me, i, rf.logs[i].Command)
 		rf.applyCh <- msg
 	}
 	rf.commitedIndex = r
@@ -272,9 +273,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Ok = true
+	reply.Term = rf.term
 	if rf.term > args.Term {
 		reply.Ok = false
-		reply.Term = rf.term
+		//reply.Term = rf.term
 		DPrintf("%d, %d reject vote to %d, request term too low %d", rf.term, rf.me, args.Sender, args.Term)
 		return
 	}
@@ -306,7 +308,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.leader = -1
 	d := get_time_out()
 	rf.vote_timeout = time.Now().Add(d)
-	DPrintf("%d, %d vote to %d, vote_timeout+%v", rf.term, rf.me, args.Sender, d)
+	DPrintf("%d, %d vote to %d, vote_timeout+%v, args %+v, logs %+v", rf.term, rf.me, args.Sender, d, args, rf.logs)
 
 	rf.persist() // for vote
 }
@@ -376,6 +378,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    term,
 		Command: command,
 	})
+	DPrintf("%d, %d, append entry %+v", rf.term, rf.me, rf.logs)
 	//go rf.leader_send_entries() // uncomment to speed up
 	return index, int(term), true
 }
@@ -445,9 +448,11 @@ func (rf *Raft) leader_send_entries() {
 				if reply.Term > term {
 					err_ch <- 1
 					rf.mu.Lock()
-					rf.term = reply.Term
-					rf.vote_for = -1
-					rf.leader = -1
+					if reply.Term > rf.term {
+						rf.term = reply.Term
+						rf.vote_for = -1
+						rf.leader = -1
+					}
 					rf.mu.Unlock()
 					return
 				}
@@ -476,17 +481,33 @@ func (rf *Raft) leader_send_entries() {
 	}
 
 	counter := 0
+	suc_counter := 0
 	loop := true
 	for loop {
 		select {
 		case ok := <-suc_ch:
-			counter += ok
-			if counter >= quota {
-				DPrintf("%d, %d leader update commited index to %d", term, rf.me, new_commit_index)
+			suc_counter += ok
+			counter += 1
+			if suc_counter == len(rf.peers)-1 {
 				rf.mu.Lock()
-				//rf.commitedIndex = new_commit_index
+				DPrintf("%d, %d leader update commited index to %d", term, rf.me, new_commit_index)
 				rf.apply_entries(new_commit_index)
 				rf.mu.Unlock()
+				loop = false
+				break
+			}
+			if suc_counter >= quota {
+				rf.mu.Lock()
+				//rf.apply_entries(new_commit_index)
+				last_log := rf.logs[new_commit_index]
+				if last_log.Term == term {
+					DPrintf("%d, %d leader update commited index to %d", term, rf.me, new_commit_index)
+					//rf.commitedIndex = new_commit_index
+					rf.apply_entries(new_commit_index)
+				}
+				rf.mu.Unlock()
+			}
+			if counter == len(rf.peers)-1 {
 				loop = false
 				break
 			}
@@ -542,9 +563,11 @@ func (rf *Raft) leader_ticker() {
 			if reply.Term > term {
 				err_ch <- 1
 				rf.mu.Lock()
-				rf.term = reply.Term
-				rf.vote_for = -1
-				rf.leader = -1
+				if reply.Term > rf.term {
+					rf.term = reply.Term
+					rf.vote_for = -1
+					rf.leader = -1
+				}
 				rf.mu.Unlock()
 				return
 			}
@@ -625,18 +648,22 @@ func (rf *Raft) vote_ticker() {
 			if reply.Term > term {
 				err_ch <- 1
 				rf.mu.Lock()
-				rf.term = reply.Term
-				rf.vote_for = -1
-				rf.leader = -1
+				if reply.Term > rf.term {
+					rf.term = reply.Term
+					rf.vote_for = -1
+					rf.leader = -1
+				}
 				rf.mu.Unlock()
 				return
 			}
 			if !reply.Ok {
 				err_ch <- 1
 				rf.mu.Lock()
-				rf.term = reply.Term
-				rf.vote_for = -1
-				rf.leader = -1
+				if reply.Term >= rf.term {
+					rf.term = reply.Term
+					rf.vote_for = -1
+					rf.leader = -1
+				}
 				rf.mu.Unlock()
 				return
 			}
@@ -672,7 +699,7 @@ func (rf *Raft) vote_ticker() {
 	rf.mu.Lock()
 	if counter < quota || term != rf.term {
 		rf.mu.Unlock()
-		time.Sleep(reelect_time * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(reelect_time)) * time.Millisecond)
 		return
 	}
 	rf.leader = rf.me
@@ -762,6 +789,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		}
 	}
 
+	DPrintf("== %d, start term %d, vote_for %d, logs %v", rf.me, rf.term, rf.vote_for, rf.logs)
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
