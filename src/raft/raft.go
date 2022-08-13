@@ -749,11 +749,11 @@ func (rf *Raft) ticker() {
 // for any long-running work.
 //
 
-const heartbeat_timeout = 200 * time.Millisecond
-const request_vote_timeout = 200 * time.Millisecond
-const min_timeout = 250 // 3* heart beat
-const max_timeout = 500 // max-min > RTT
-const reelect_time = 200
+const heartbeat_timeout = 100 * time.Millisecond    // should be small enough to avoid followers timeout
+const request_vote_timeout = 200 * time.Millisecond //  should be big enough to allow followers' vote return 100* sqrt(len(rf.peer))
+const min_timeout = 250                             // 3* heart beat
+const max_timeout = 500                             // max-min > RTT
+const reelect_time = 200                            // should be random
 
 func get_time_out() time.Duration {
 	return time.Duration(rand.Intn(max_timeout-min_timeout)+min_timeout) * time.Millisecond
