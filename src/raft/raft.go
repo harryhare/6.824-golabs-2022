@@ -197,7 +197,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		last_entry := rf.logs[len(rf.logs)-1]
 		reply.PrevTerm = last_entry.Term
 		reply.PrevIndex = len(rf.logs) - 1
-		DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex is empty", rf.term, rf.me, args.Sender, d)
+		DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex is empty, reply %+v", rf.term, rf.me, args.Sender, d, reply)
 		return
 	} else {
 		prev_entry := rf.logs[args.PrevIndex]
@@ -214,7 +214,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			if i >= 0 {
 				reply.PrevTerm = rf.logs[i].Term
 			}
-			DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex term not match local %d leader %d", rf.term, rf.me, args.Sender, d, prev_entry.Term, args.PrevTerm)
+			DPrintf("%d, %d recv AppendEntries  from %d, vote_timeout+%v, prevIndex term not match local %d leader %d, reply %+v", rf.term, rf.me, args.Sender, d, prev_entry.Term, args.PrevTerm, reply)
 			return
 		} else {
 			reply.Ok = true
@@ -435,10 +435,10 @@ func (rf *Raft) leader_send_entries() {
 			continue
 		}
 		go func(i int) {
-			reply := AppendEntriesReply{}
-			reply.Ok = false
+			loop := true
 			arg := &arg1
-			for !reply.Ok {
+			for loop {
+				reply := AppendEntriesReply{}
 				suc := rf.sendAppendEntries(i, arg, &reply)
 				if !suc {
 					suc_ch <- 0 //network err
@@ -457,25 +457,25 @@ func (rf *Raft) leader_send_entries() {
 					return
 				}
 				if reply.Ok {
+					loop = false
 					suc_ch <- 1
 					DPrintf("%d, %d send heartbeat, %d accept", term, rf.me, i)
 					return
 				}
 				// if !reply.Ok
 				rf.mu.Lock()
-				prevIndex := reply.PrevIndex
-				prevTerm := rf.logs[prevIndex].Term
-
+				pi := reply.PrevIndex
+				pt := rf.logs[pi].Term
 				arg = &AppendEntriesArgs{
 					Term:        term,
 					Sender:      rf.me,
-					Entries:     rf.logs[prevIndex+1 : new_commit_index+1],
-					PrevIndex:   prevIndex,
-					PrevTerm:    prevTerm,
+					Entries:     rf.logs[pi+1 : new_commit_index+1],
+					PrevIndex:   pi,
+					PrevTerm:    pt,
 					CommitIndex: rf.commitedIndex,
 				}
 				rf.mu.Unlock()
-				DPrintf("%d, %d send heartbeat, %d reject", term, rf.me, i)
+				DPrintf("%d, %d send heartbeat, %d reject, reply %+v, resend %+v", term, rf.me, i, reply, arg)
 			}
 		}(i)
 	}
@@ -522,7 +522,7 @@ func (rf *Raft) leader_send_entries() {
 	}
 
 	DPrintf("%d, %d send heartbeat, %d reply total", term, rf.me, counter)
-	if counter < quota || is_leader == false {
+	if is_leader == false {
 		rf.mu.Lock()
 		rf.leader = -1
 		rf.mu.Unlock()
@@ -604,7 +604,7 @@ func (rf *Raft) leader_ticker() {
 	}
 
 	DPrintf("%d, %d send heartbeat, %d reply total", term, rf.me, counter)
-	if counter < quota || is_leader == false {
+	if is_leader == false {
 		rf.mu.Lock()
 		rf.leader = -1
 		rf.mu.Unlock()
@@ -749,8 +749,8 @@ func (rf *Raft) ticker() {
 // for any long-running work.
 //
 
-const heartbeat_timeout = 100 * time.Millisecond
-const request_vote_timeout = 100 * time.Millisecond
+const heartbeat_timeout = 200 * time.Millisecond
+const request_vote_timeout = 200 * time.Millisecond
 const min_timeout = 250 // 3* heart beat
 const max_timeout = 500 // max-min > RTT
 const reelect_time = 200
