@@ -293,28 +293,37 @@ func TestFailAgree2B(t *testing.T) {
 
 	cfg.begin("Test (2B): agreement after follower reconnects")
 
+	DPrintf("=> test 101")
 	cfg.one(101, servers, false)
 
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
+	DPrintf("=> disconnect follower %d", (leader+1)%servers)
 	cfg.disconnect((leader + 1) % servers)
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
+	DPrintf("=> test 102")
 	cfg.one(102, servers-1, false)
+	DPrintf("=> test 103")
 	cfg.one(103, servers-1, false)
 	time.Sleep(RaftElectionTimeout)
+	DPrintf("=> test 104")
 	cfg.one(104, servers-1, false)
+	DPrintf("=> test 105")
 	cfg.one(105, servers-1, false)
 
 	// re-connect
+	DPrintf("re-connect follower %d", (leader+1)%servers)
 	cfg.connect((leader + 1) % servers)
 
 	// the full set of servers should preserve
 	// previous agreements, and be able to agree
 	// on new commands.
+	DPrintf("=> test 106")
 	cfg.one(106, servers, true)
 	time.Sleep(RaftElectionTimeout)
+	DPrintf("=> test 107")
 	cfg.one(107, servers, true)
 
 	cfg.end()
@@ -531,27 +540,37 @@ func TestBackup2B(t *testing.T) {
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
+	DPrintf("=> disconnect follower %d", (leader1+2)%servers)
+	DPrintf("=> disconnect follower %d", (leader1+3)%servers)
+	DPrintf("=> disconnect follower %d", (leader1+4)%servers)
 	cfg.disconnect((leader1 + 2) % servers)
 	cfg.disconnect((leader1 + 3) % servers)
 	cfg.disconnect((leader1 + 4) % servers)
 
 	// submit lots of commands that won't commit
 	for i := 0; i < 50; i++ {
+		DPrintf("=> first round %d", i)
 		cfg.rafts[leader1].Start(rand.Int())
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
 
+	DPrintf("=> disconnect follower %d", (leader1+1)%servers)
+	DPrintf("=> disconnect leader   %d", (leader1+0)%servers)
 	cfg.disconnect((leader1 + 0) % servers)
 	cfg.disconnect((leader1 + 1) % servers)
 
 	// allow other partition to recover
+	DPrintf("=> re-connect follower %d", (leader1+2)%servers)
+	DPrintf("=> re-connect follower %d", (leader1+3)%servers)
+	DPrintf("=> re-connect follower %d", (leader1+4)%servers)
 	cfg.connect((leader1 + 2) % servers)
 	cfg.connect((leader1 + 3) % servers)
 	cfg.connect((leader1 + 4) % servers)
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
+		DPrintf("=> second round %d", i)
 		cfg.one(rand.Int(), 3, true)
 	}
 
@@ -561,10 +580,12 @@ func TestBackup2B(t *testing.T) {
 	if leader2 == other {
 		other = (leader2 + 1) % servers
 	}
+	DPrintf("=> disconnect follower %d", other)
 	cfg.disconnect(other)
 
 	// lots more commands that won't commit
 	for i := 0; i < 50; i++ {
+		DPrintf("=> third round %d(won't commit)", i)
 		cfg.rafts[leader2].Start(rand.Int())
 	}
 
@@ -572,21 +593,29 @@ func TestBackup2B(t *testing.T) {
 
 	// bring original leader back to life,
 	for i := 0; i < servers; i++ {
+		DPrintf("=> disconnect all %d", i)
 		cfg.disconnect(i)
 	}
+	DPrintf("=> re-connect follower %d", (leader1+0)%servers)
+	DPrintf("=> re-connect follower %d", (leader1+1)%servers)
+	DPrintf("=> re-connect follower %d", other)
 	cfg.connect((leader1 + 0) % servers)
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
+		DPrintf("=> fourth round %d", i)
 		cfg.one(rand.Int(), 3, true)
 	}
 
 	// now everyone
 	for i := 0; i < servers; i++ {
+		DPrintf("=> re-connect all %d", i)
 		cfg.connect(i)
 	}
+
+	DPrintf("=> finally check")
 	cfg.one(rand.Int(), servers, true)
 
 	cfg.end()
@@ -934,6 +963,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 			cfg.setlongreordering(true)
 		}
 		leader := -1
+		DPrintf("=> round %d start", iters)
 		for i := 0; i < servers; i++ {
 			_, _, ok := cfg.rafts[i].Start(rand.Int() % 10000)
 			if ok && cfg.connected[i] {
@@ -950,6 +980,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		}
 
 		if leader != -1 && (rand.Int()%1000) < int(RaftElectionTimeout/time.Millisecond)/2 {
+			DPrintf("=> disconnect leader %d", leader)
 			cfg.disconnect(leader)
 			nup -= 1
 		}
@@ -957,6 +988,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.connected[s] == false {
+				DPrintf("=> connect server %d", s)
 				cfg.connect(s)
 				nup += 1
 			}
@@ -965,10 +997,12 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
 	for i := 0; i < servers; i++ {
 		if cfg.connected[i] == false {
+			DPrintf("=> connect server %d", i)
 			cfg.connect(i)
 		}
 	}
 
+	DPrintf("=> finally check")
 	cfg.one(rand.Int()%10000, servers, true)
 
 	cfg.end()
